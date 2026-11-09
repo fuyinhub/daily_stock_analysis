@@ -570,6 +570,74 @@ jobs:
             logs/
           retention-days: 30
       
+      - name: 推送报告到私有仓库
+        if: always()
+        env:
+          DSA_SYNC_TOKEN: ${{ secrets.DSA_SYNC_TOKEN }}
+        run: |
+          python3 - <<'PYEOF'
+          import base64, json, os, re, urllib.request, urllib.error
+
+          TOKEN = os.environ["DSA_SYNC_TOKEN"]
+          API = "https://api.github.com/repos/fuyinhub/dsa-reports/contents"
+          REPORTS_DIR = "reports"
+
+          def gh(method, url, payload=None):
+              body = json.dumps(payload).encode() if payload is not None else None
+              req = urllib.request.Request(url, data=body, method=method)
+              req.add_header("Accept", "application/vnd.github+json")
+              req.add_header("X-GitHub-Api-Version", "2022-11-28")
+              req.add_header("Authorization", f"Bearer {TOKEN}")
+              if body:
+                  req.add_header("Content-Type", "application/json")
+              try:
+                  with urllib.request.urlopen(req, timeout=60) as resp:
+                      return resp.status, json.loads(resp.read().decode())
+              except urllib.error.HTTPError as e:
+                  try:
+                      detail = json.loads(e.read().decode() or "{}")
+                  except Exception:
+                      detail = {}
+                  return e.code, detail
+
+          def put_file(path, content_bytes, message):
+              status, resp = gh("GET", f"{API}/{path}")
+              sha = resp.get("sha") if status == 200 else None
+              payload = {
+                  "message": message,
+                  "content": base64.b64encode(content_bytes).decode(),
+                  "branch": "main",
+              }
+              if sha:
+                  payload["sha"] = sha
+              status, resp = gh("PUT", f"{API}/{path}", payload)
+              if status in (200, 201):
+                  print(f"PUT {path}: {status} ok")
+              else:
+                  print(f"PUT {path}: {status} {resp}")
+              return status in (200, 201)
+
+          # Combined daily report: reports/report_YYYYMMDD.md (pipeline.py:3779)
+          cands = []
+          for root, _, files in os.walk(REPORTS_DIR):
+              for fn in files:
+                  if re.fullmatch(r"report_\d{8}\.md", fn):
+                      cands.append(os.path.join(root, fn))
+          if not cands:
+              print("no combined daily report found under reports/; nothing to push")
+              raise SystemExit(0)
+          cands.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+          src = cands[0]
+          print(f"report found: {src}")
+          with open(src, "rb") as f:
+              data = f.read()
+          m = re.search(r"(\d{4})(\d{2})(\d{2})", os.path.basename(src))
+          datestr = f"{m.group(1)}-{m.group(2)}-{m.group(3)}" if m else "unknown-date"
+          ok1 = put_file("latest.md", data, f"Daily report {datestr}")
+          ok2 = put_file(f"{datestr}.md", data, f"Daily report {datestr}")
+          print("push ok" if (ok1 and ok2) else "push FAILED")
+          raise SystemExit(0 if (ok1 and ok2) else 1)
+          PYEOF
       - name: 显示运行结果
         if: always()
         run: |
