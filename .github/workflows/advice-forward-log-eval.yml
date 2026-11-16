@@ -1,0 +1,63 @@
+name: Advice Forward Log Eval
+
+# Scores the accumulated forward log of the system's published advice against
+# the prices that followed. Reporter only: it never gates a merge, calls no LLM,
+# fetches no market data and places no orders. See docs/advice-forward-log.md.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'evals/advice_forward_log/**'
+      - '.github/workflows/advice-forward-log-eval.yml'
+
+concurrency:
+  group: advice-forward-log-eval-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v5
+
+      - name: 🐍 Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      # fetch + evaluate use the standard library and the pure BacktestEngine only,
+      # so no dependency install is needed. Horizon and neutral band are the
+      # BACKTEST_* defaults (10 trading days, 2%).
+      - name: 📊 Evaluate the forward log (non-blocking)
+        continue-on-error: true
+        env:
+          DSA_SYNC_TOKEN: ${{ secrets.DSA_SYNC_TOKEN }}
+          ADVICE_LOG_REPO: ${{ github.repository_owner }}/dsa-reports
+        run: |
+          set -o pipefail
+          ADVICE_LOG_DIR="$RUNNER_TEMP/advice-log"
+          python evals/advice_forward_log/run.py fetch --log-dir "$ADVICE_LOG_DIR" --repo "$ADVICE_LOG_REPO"
+          python evals/advice_forward_log/run.py evaluate --log-dir "$ADVICE_LOG_DIR" \
+            --json-out advice-forward-log-eval.json | tee advice-forward-log-eval.txt
+          {
+            echo '```'
+            cat advice-forward-log-eval.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 📤 Upload evaluation report
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          retention-days: 7
+          name: advice-forward-log-eval-${{ github.run_number }}
+          path: |
+            advice-forward-log-eval.json
+            advice-forward-log-eval.txt
+          if-no-files-found: ignore
