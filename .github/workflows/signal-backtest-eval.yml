@@ -1,0 +1,80 @@
+name: Signal Backtest Eval
+
+# Walk-forward evaluation of the deterministic trend signal on real daily bars.
+# Reporter only: it never gates a merge, calls no LLM and places no orders.
+# See docs/signal-backtest-eval.md.
+
+on:
+  workflow_dispatch:
+    inputs:
+      segment:
+        description: 'design = before the holdout (default); holdout = out-of-sample check'
+        required: false
+        default: 'design'
+        type: choice
+        options:
+          - design
+          - holdout
+  pull_request:
+    branches: [main]
+    paths:
+      - 'evals/signal_backtest/**'
+      - '.github/workflows/signal-backtest-eval.yml'
+
+concurrency:
+  group: signal-backtest-eval-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v5
+
+      - name: 🐍 Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: 📦 Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 📊 Run signal evaluation (non-blocking)
+        continue-on-error: true
+        env:
+          # Same resolution order as the daily analysis workflow.
+          STOCK_LIST_CONFIG: ${{ vars.STOCK_LIST || secrets.STOCK_LIST }}
+          EVAL_SEGMENT: ${{ inputs.segment || 'design' }}
+        run: |
+          set -o pipefail
+          if [ -n "${STOCK_LIST_CONFIG:-}" ]; then
+            export STOCK_LIST="$STOCK_LIST_CONFIG"
+          elif [ -z "${STOCK_LIST:-}" ]; then
+            export STOCK_LIST="600519"
+          fi
+          python evals/signal_backtest/run_eval.py \
+            --segment "$EVAL_SEGMENT" \
+            --json-out signal-backtest-eval.json | tee signal-backtest-eval.txt
+          {
+            echo '```'
+            cat signal-backtest-eval.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 📤 Upload evaluation report
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          retention-days: 7
+          name: signal-backtest-eval-${{ github.run_number }}
+          path: |
+            signal-backtest-eval.json
+            signal-backtest-eval.txt
+          if-no-files-found: ignore

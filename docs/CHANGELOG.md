@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [测试] 新增 `evals/signal_backtest/` 确定性趋势信号回放评估：用仓库数据源的真实日线逐日重算 `StockTrendAnalyzer` 信号，复用 `BacktestEngine` 评估前瞻收益并对比买入持有基准；预先划分设计期与留出期，不调用 LLM、不下单；附非阻断 `Signal Backtest Eval` workflow，说明见 `docs/signal-backtest-eval.md`。
+
 - [修复] Agent 工具消息内容与工具调用参数序列化不再透传 NaN/±Infinity：`LLMToolAdapter._convert_messages` 序列化前将非有限浮点递归归一化为 `null`，并以 `allow_nan=False` 输出严格 RFC 8259 JSON，避免 LiteLLM 以 `"NaN" is not valid JSON` 拒绝请求（#2471）。
 
 - [修复] 启动日志不再对 `--stocks` / `--portfolio` / `--no-notify` 已覆盖的配置项告警；单一日线数据源失败（含 Eastmoney 股票与 ETF 请求）降为 WARNING，普通股票及 A 股指数全部日线数据源失败仍为 ERROR；LLM 返回与调试日志显示实际响应模型（含流式响应），依据实际调用路由标注回退，避免将别名、供应商前缀和日期版本差异误报为回退
