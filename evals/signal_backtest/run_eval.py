@@ -297,6 +297,8 @@ def format_text_report(report: Dict[str, Any]) -> str:
             f"  strategy {_fmt(sim['mean_strategy_return_pct'])}% gross, "
             f"{_fmt(sim['mean_strategy_net_return_pct'])}% net of {protocol['cost_bps_per_side']} bps per change",
             f"  buy-and-hold over the same days {_fmt(sim['mean_buy_and_hold_return_pct'])}%",
+            f"  median ticker: strategy {_fmt(sim['median_strategy_return_pct'])}% gross, "
+            f"buy-and-hold {_fmt(sim['median_buy_and_hold_return_pct'])}%",
             f"  strategy beat buy-and-hold in {sim['tickers_strategy_beats_buy_and_hold']} of {sim['tickers']} tickers "
             f"gross, {sim['tickers_net_strategy_beats_buy_and_hold']} net",
             f"  exposure {_fmt(sim['mean_exposure_pct'])}%, position changes {_fmt(sim['mean_position_changes'])} per ticker",
