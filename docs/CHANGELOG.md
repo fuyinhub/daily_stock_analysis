@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [测试] 新增建议前瞻纸面日志 `evals/advice_forward_log/`：每日分析 workflow 将本次运行实际给出的结构化建议（`sentiment_score`、`operation_advice`、`decision_type`、`action`、点位等）与其依据的日线以 JSONL 追加到私有报告仓库的 `advice-log/`（只追加、股票以序号标签代替代码与名称、不记录叙述文本）；新增 `Advice Forward Log Eval` workflow 与 `run.py evaluate`，按建议类别统计其后 10 个交易日收益（2% 中性带，与全部已评估建议对比），样本不足时明确报告 `INSUFFICIENT DATA`。仅记录与评估，不改动任何信号、评分或 Prompt，不构成投资建议；说明见 `docs/advice-forward-log.md`
 - [修复] Agent 工具消息内容与工具调用参数序列化不再透传 NaN/±Infinity：`LLMToolAdapter._convert_messages` 序列化前将非有限浮点递归归一化为 `null`，并以 `allow_nan=False` 输出严格 RFC 8259 JSON，避免 LiteLLM 以 `"NaN" is not valid JSON` 拒绝请求（#2471）。
 
 - [修复] 启动日志不再对 `--stocks` / `--portfolio` / `--no-notify` 已覆盖的配置项告警；单一日线数据源失败（含 Eastmoney 股票与 ETF 请求）降为 WARNING，普通股票及 A 股指数全部日线数据源失败仍为 ERROR；LLM 返回与调试日志显示实际响应模型（含流式响应），依据实际调用路由标注回退，避免将别名、供应商前缀和日期版本差异误报为回退

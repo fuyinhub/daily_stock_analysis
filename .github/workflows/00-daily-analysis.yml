@@ -638,6 +638,30 @@ jobs:
           print("push ok" if (ok1 and ok2) else "push FAILED")
           raise SystemExit(0 if (ok1 and ok2) else 1)
           PYEOF
+
+      # 前瞻纸面日志：把本次运行实际给出的结构化建议与其依据的日线追加到私有仓库的
+      # advice-log/ 目录（只追加、不覆盖），供日后对照后续价格评估。仅记录与评估，
+      # 不调用 LLM、不下单；失败不影响分析任务。见 docs/advice-forward-log.md。
+      - name: 追加建议前瞻日志到私有仓库
+        if: always()
+        continue-on-error: true
+        env:
+          STOCK_LIST_CONFIG: ${{ vars.STOCK_LIST || secrets.STOCK_LIST }}
+          DSA_SYNC_TOKEN: ${{ secrets.DSA_SYNC_TOKEN }}
+          ADVICE_LOG_REPO: ${{ github.repository_owner }}/dsa-reports
+          ADVICE_LOG_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          # 与“执行股票分析”步骤相同的自选股解析顺序
+          if [ -n "${STOCK_LIST_CONFIG:-}" ]; then
+            export STOCK_LIST="$STOCK_LIST_CONFIG"
+          elif [ -z "${STOCK_LIST:-}" ]; then
+            export STOCK_LIST="600519"
+          fi
+          # 写到 RUNNER_TEMP，不进入 reports/、logs/ 的 artifact
+          ADVICE_LOG_DIR="$RUNNER_TEMP/advice-log"
+          python evals/advice_forward_log/run.py export --log-dir "$ADVICE_LOG_DIR" --run-id "$ADVICE_LOG_RUN_ID"
+          python evals/advice_forward_log/run.py push --log-dir "$ADVICE_LOG_DIR" --repo "$ADVICE_LOG_REPO"
+
       - name: 显示运行结果
         if: always()
         run: |
