@@ -27,7 +27,8 @@ The published `operation_advice` comes from the LLM. It cannot be regenerated fo
    - the **benchmark**: the same statistics over every evaluated day regardless of signal, and each group's excess over it;
    - separation on non-overlapping forward windows only: long-minus-cash mean return with a Welch t statistic, and the rank correlation (Spearman) between score and forward return within each ticker;
    - the built-in backtest's direction accuracy and win rate;
-   - a paper simulation per ticker (hold the stock on the day after a long signal, otherwise cash) against **buy-and-hold over the same days**, gross and net of an assumed cost per position change.
+   - a paper simulation per ticker (hold the stock on the day after a long signal, otherwise cash) against **buy-and-hold over the same days**, gross and net of an assumed cost per position change;
+   - an anonymous per-ticker table (`ticker_1`, `ticker_2`, ...) with relative figures only: rank correlation, long-minus-cash spread, exposure, and strategy return minus buy-and-hold. Raw per-ticker returns are withheld because, next to a known date range, they would identify the ticker.
 
 ## Design period and held-out period
 
@@ -40,7 +41,26 @@ The period is split once, in advance, by constants in `run_eval.py`:
 
 The default run reports the design period only. Design-period signals whose forward window would reach the held-out period are removed, so no design number depends on a held-out price. The dates are fixed rather than rolling so that old holdout data never drifts into the design period.
 
-The held-out period exists for one purpose: checking a later change to the signal logic on data that was not used to design it. Run `--segment holdout` for that check, report it next to the design-period number, and do not tune anything against it. Once the held-out period has informed a design decision it is no longer out-of-sample, and a new one has to be set aside.
+The held-out period exists for one purpose: checking a result or a later change to the signal logic on data that was not used to design it. Run `--segment holdout` for that check, report it next to the design-period number, and do not tune anything against it. Once the held-out period has informed a design decision it is no longer out-of-sample, and a new one has to be set aside.
+
+The design segment cuts the bars at the day before the held-out period starts before it computes anything, so a design run cannot read a held-out price even by accident.
+
+**The 2025-11-01 to 2026-10-31 period has now been reported once**, to validate the unchanged signal out of sample. It is no longer unseen. Any later change to the signal logic needs a fresh out-of-sample check, which in practice means data after 2026-10-31 or the forward log of published advice.
+
+## What the audit checked
+
+Each property below is pinned by a test in `tests/test_signal_backtest_eval.py`.
+
+| Question | Answer |
+| --- | --- |
+| Can a signal see a later bar? | No. The analyzer input ends on the signal date, and truncating the data after that date leaves every signal unchanged. |
+| Do back-adjusted prices leak later corporate actions into a signal? | No. A later split or dividend rescales all earlier prices by one constant factor, and the signal is unchanged by a constant factor. |
+| Is the signal day's own return counted as a result? | No. Forward returns start at the signal-day close; the simulation applies a signal to the following close-to-close day. |
+| Is buy-and-hold measured over the same days and prices as the strategy? | Yes. Both legs compound the same adjusted closes over the same days. |
+| Can a design run read a held-out price? | No. Held-out bars are cut before any computation, and changing them leaves the design report identical. |
+| Is the last bar of the period kept? | Yes. One extra day is requested and later bars are cut, because some sources (yfinance) treat the end date as exclusive. |
+
+What the audit could not remove is listed under Limitations: the fill assumption, the cost assumption, and the way the universe is chosen.
 
 ## Usage
 
@@ -73,9 +93,11 @@ The `Signal Backtest Eval` workflow (`.github/workflows/signal-backtest-eval.yml
 ## Limitations
 
 - **Deterministic layer only.** The numbers describe the trend signal, not the LLM's published advice.
-- **Small universe.** The default universe is the configured watchlist. A handful of tickers picked by the user is not a sample of the market, and tickers chosen with hindsight carry selection bias.
+- **Universe not fixed in advance.** The default universe is the watchlist as configured on the day of the run. It was not recorded before either period began, so it can contain tickers picked because they had already done well, and it cannot contain tickers that were dropped or delisted. This inflates buy-and-hold and the all-days benchmark for both periods. It does not by itself favour the signal, because every comparison is made within the same tickers. A handful of tickers is also not a sample of the market.
 - **Overlapping windows.** Daily signals with a multi-day horizon share most of their forward window. Group means use all days; t statistics and rank correlations use the thinned, non-overlapping sample, and are still approximate.
 - **Adjusted prices.** Data sources return forward-adjusted bars as of the fetch date, so historical prices differ slightly from those the analyzer saw live. Sources may also cap history length; the report prints the bars actually received per ticker.
 - **End-of-day replay.** The replay uses completed daily bars. Live runs made before the close blend in an intraday quote, which is not reproduced.
-- **Simplified execution.** Fills at the close, no slippage, limit-up/limit-down or suspension handling, cash earns nothing, and the cost figure is an assumption.
+- **Optimistic fill.** A signal needs the day's close to be computed, and the harness then enters at that same close. A report read after the close could be acted on at the next open at the earliest. The effect of that one-session delay has not been measured.
+- **Cost assumption.** The net simulation charges a flat 10 basis points each time the position changes (`--cost-bps`) and nothing else: no bid-ask spread or slippage, no stamp duty or other market-specific fee, no limit-up/limit-down or suspension handling, no charge for buy-and-hold's single entry or for closing the final position, and cash earns nothing. Forward-return statistics (group means, long-minus-cash, rank correlation) are gross of all costs.
+- **t statistics are optimistic.** Tickers are evaluated over the same dates and their returns move together, so pooled observations are not independent. The reported t values overstate significance.
 - **No multiple-testing correction.** The report shows many groups; some will look good by chance.
