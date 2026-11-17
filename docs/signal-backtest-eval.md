@@ -62,6 +62,38 @@ Each property below is pinned by a test in `tests/test_signal_backtest_eval.py`.
 
 What the audit could not remove is listed under Limitations: the fill assumption, the cost assumption, and the way the universe is chosen.
 
+## Recorded result: design period and held-out period
+
+Both columns come from one GitHub Actions run of the `Signal Backtest Eval` workflow on 2026-11-17 (the design and holdout jobs of the same run, same code, same configured watchlist, bars from `YfinanceFetcher`). 13 of 13 tickers were evaluated in each. Horizon 10 trading days, entry at the signal-day close, 10 basis points per position change in the net figure. Nothing was tuned between the two columns, and no signal logic was changed.
+
+| Metric | Design period | Held-out period |
+| --- | --- | --- |
+| Signal dates | 2023-01-03 to 2025-10-17 | 2025-11-03 to 2026-10-16 |
+| Signal-days (non-overlapping windows) | 9,107 (922) | 3,120 (312) |
+| Rank correlation, score vs 10-day forward return | 0.0042, t = 0.13 | -0.0993, t = -1.76 |
+| Tickers with positive rank correlation | 4 of 13 | 6 of 13 |
+| Long minus cash, mean 10-day forward return | +0.84 pct points, t = 0.73 (332 long, 590 cash) | -1.29 pct points, t = -0.84 (93 long, 219 cash) |
+| All days, mean / median 10-day forward return (benchmark) | 3.08% / 1.13% | 0.11% / -0.82% |
+| Long days, mean forward return (excess over all days) | 3.03% (+0.43) | -0.05% (-0.70) |
+| Cash days, mean forward return (excess over all days) | 3.12% (-0.26) | 0.18% (+0.30) |
+| Paper simulation, mean total return, gross / net | 54.57% / 35.52% | -3.11% / -7.11% |
+| Buy-and-hold over the same days, mean | 893.10% | 5.05% |
+| Median ticker: simulation gross / buy-and-hold | 20.86% / 94.65% | -14.01% / -12.53% |
+| Tickers where the simulation beat buy-and-hold, gross / net | 1 / 1 of 13 | 8 / 7 of 13 |
+| Time in the market; position changes per ticker | 37.70%; 130.54 | 30.35%; 42.00 |
+| Mean max drawdown, simulation / buy-and-hold | -43.98% / -53.45% | -24.85% / -42.74% |
+| Mean daily return on long days / cash days | 0.2351% / 0.3755% | -0.1907% / 0.0396% |
+| Direction accuracy under the built-in backtest rules | 35.19% | 31.38% |
+
+Reading it:
+
+- **The held-out period does not show predictive value either.** The design period showed no relationship between score and later return. In the held-out period the point estimates lean the wrong way (higher scores and long days were followed by slightly lower returns), and neither is statistically distinguishable from zero. With 312 non-overlapping observations in one year, this run cannot tell "no effect" from "a small negative effect".
+- **Beating buy-and-hold in 8 of 13 tickers is not evidence for the signal.** The median ticker fell over the held-out period, and a rule that sits in cash 70% of the time loses less in a falling market whatever it keys on. The check that isolates the signal is the daily return on days it chose to be long against days it chose cash, and long days were the worse ones in both periods.
+- On average the simulation still trailed buy-and-hold (-3.11% against 5.05% gross), because one ticker rose strongly while the simulation was mostly out of it.
+- The design column differs from the first published design run (2026-11-16) by one signal-day out of 9,107 changing from "wait" to "buy" (simulation 54.57% against 54.51% gross). The unmodified first-version harness, re-run on 2026-11-17, gives exactly the numbers in this table, so the difference comes from the data source returning slightly different bars on a later day, not from the audit changes. Results are reproducible to that tolerance, not bit for bit.
+
+Per-ticker rows (anonymous, relative figures only) are in the job log and the run artifact. In the held-out period each ticker has 240 signal-days and 24 non-overlapping windows, which is too few to read any single row.
+
 ## Usage
 
 ```bash
