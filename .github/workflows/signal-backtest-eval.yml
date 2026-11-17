@@ -27,8 +27,16 @@ concurrency:
 
 jobs:
   eval:
+    name: eval (${{ matrix.segment }})
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        # Manual runs evaluate the chosen segment. Pull requests that touch the
+        # harness report both, so a harness change is always shown against the
+        # design-period control and the held-out period side by side.
+        segment: ${{ fromJSON(github.event_name == 'workflow_dispatch' && format('["{0}"]', inputs.segment) || '["design","holdout"]') }}
     permissions:
       contents: read
     steps:
@@ -51,7 +59,7 @@ jobs:
         env:
           # Same resolution order as the daily analysis workflow.
           STOCK_LIST_CONFIG: ${{ vars.STOCK_LIST || secrets.STOCK_LIST }}
-          EVAL_SEGMENT: ${{ inputs.segment || 'design' }}
+          EVAL_SEGMENT: ${{ matrix.segment }}
         run: |
           set -o pipefail
           if [ -n "${STOCK_LIST_CONFIG:-}" ]; then
@@ -73,7 +81,7 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           retention-days: 7
-          name: signal-backtest-eval-${{ github.run_number }}
+          name: signal-backtest-eval-${{ matrix.segment }}-${{ github.run_number }}
           path: |
             signal-backtest-eval.json
             signal-backtest-eval.txt

@@ -53,6 +53,7 @@ from evals.signal_backtest.replay import (  # noqa: E402
     select_segment,
     simulate_long_or_cash,
     summarize,
+    ticker_metrics,
 )
 
 # Evaluation protocol, fixed in advance and not tuned to any result. Keeping
@@ -158,7 +159,13 @@ def run(
 ) -> Dict[str, Any]:
     """Evaluate every code and return the structured report."""
     fetch_start = (start - timedelta(days=WARMUP_CALENDAR_DAYS)).strftime("%Y-%m-%d")
-    fetch_end = end.strftime("%Y-%m-%d")
+    # Some sources treat the end date as exclusive (yfinance does). Ask for one
+    # day more and cut at ``last_usable`` below, so the last bar of the period
+    # is kept whichever convention the source follows.
+    fetch_end = (end + timedelta(days=1)).strftime("%Y-%m-%d")
+    # The design segment never loads a held-out bar: besides the purge in
+    # ``select_segment``, the bars themselves are cut before any computation.
+    last_usable = min(end, holdout_start - timedelta(days=1)) if segment == SEGMENT_DESIGN else end
 
     observations = []
     simulations: List[Dict[str, Any]] = []
@@ -169,6 +176,7 @@ def run(
         try:
             raw, source = fetch(code, fetch_start, fetch_end)
             bars = prepare_bars(raw)
+            bars = bars[bars["date"] <= last_usable].reset_index(drop=True)
         except Exception as exc:  # one failing ticker must not sink the whole evaluation
             entry.update({"status": "fetch_failed", "error_type": type(exc).__name__})
             if per_ticker:
@@ -198,6 +206,8 @@ def run(
                 "observations": len(selected),
             }
         )
+        if selected:
+            entry["metrics"] = ticker_metrics(selected, simulation, eval_window_days=eval_window_days)
         if per_ticker and selected:
             entry["summary"] = summarize(selected, eval_window_days=eval_window_days)
             entry["simulation"] = simulation
@@ -219,6 +229,7 @@ def run(
             "cost_bps_per_side": cost_bps_per_side,
             "entry": "signal-day close",
             "exit": f"close {eval_window_days} trading days later",
+            "last_usable_bar_date": last_usable,
         },
         "universe": {
             "requested": len(codes),
@@ -307,6 +318,23 @@ def format_text_report(report: Dict[str, Any]) -> str:
             f"  mean daily return when long {_fmt(sim['mean_daily_return_when_long_pct'], 4)}%, "
             f"when in cash {_fmt(sim['mean_daily_return_when_cash_pct'], 4)}%",
         ]
+    rows = [t for t in report["tickers"] if t.get("metrics")]
+    if rows:
+        lines += [
+            "",
+            "Per ticker (rank IC and long-minus-cash on non-overlapping windows; strategy minus buy-and-hold",
+            "in pct points over the same days; raw per-ticker returns are withheld to keep tickers anonymous):",
+            f"  {'ticker':<12}{'n':>6}{'n_thin':>8}{'rank_ic':>9}{'long-cash':>11}{'exposure%':>11}"
+            f"{'gross-b&h':>11}{'net-b&h':>10}",
+        ]
+        for ticker in rows:
+            m = ticker["metrics"]
+            lines.append(
+                f"  {ticker['ticker']:<12}{ticker['observations']:>6}{m['non_overlapping_observations']:>8}"
+                f"{_fmt(m['rank_ic'], 4):>9}{_fmt(m['long_minus_cash_pct']):>11}{_fmt(m['exposure_pct']):>11}"
+                f"{_fmt(m['strategy_minus_buy_and_hold_pct']):>11}"
+                f"{_fmt(m['net_strategy_minus_buy_and_hold_pct']):>10}"
+            )
     lines += ["", report["disclaimer"]]
     return "\n".join(lines)
 

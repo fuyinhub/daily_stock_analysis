@@ -29,6 +29,7 @@ from evals.signal_backtest.replay import (
     simulate_long_or_cash,
     spearman,
     summarize,
+    ticker_metrics,
 )
 from src.stock_analyzer import StockTrendAnalyzer
 
@@ -232,3 +233,116 @@ def test_cli_exits_one_when_nothing_can_be_evaluated(capsys) -> None:
 def test_cli_rejects_inconsistent_dates(capsys) -> None:
     exit_code = run_eval.main(["--stocks", "ANY", "--start", "2025-01-01", "--holdout-start", "2024-01-01"])
     assert exit_code == 2
+
+
+# ----------------------------------------------------------------------------
+# Audit regressions: each test pins one property the harness audit relied on.
+# ----------------------------------------------------------------------------
+
+_AUDIT_ARGS = [
+    "--stocks", "SECRET1",
+    "--start", "2023-09-01",
+    "--holdout-start", "2024-09-01",
+    "--end", "2024-12-31",
+    "--window", "10",
+    "--neutral-band", "2.0",
+]
+
+
+def _run_cli(tmp_path, frame: pd.DataFrame, *extra: str, calls=None):
+    def fetch(code: str, start: str, end: str):
+        if calls is not None:
+            calls.append((start, end))
+        return frame, "StubFetcher"
+
+    out = tmp_path / "report.json"
+    exit_code = run_eval.main([*_AUDIT_ARGS, *extra, "--json-out", str(out)], fetch=fetch)
+    assert exit_code == 0
+    return json.loads(out.read_text(encoding="utf-8"))
+
+
+def test_design_report_does_not_depend_on_holdout_prices(tmp_path, capsys) -> None:
+    frame = _synthetic_bars(days=420, start=date(2023, 6, 1))
+    tampered = frame.copy()
+    in_holdout = pd.to_datetime(tampered["date"]).dt.date >= date(2024, 9, 1)
+    for column in ("open", "high", "low", "close"):
+        tampered.loc[in_holdout, column] = tampered.loc[in_holdout, column] * 3.7
+    tampered.loc[in_holdout, "volume"] = tampered.loc[in_holdout, "volume"] * 0.2
+
+    original = _run_cli(tmp_path, frame)
+    changed = _run_cli(tmp_path, tampered)
+    capsys.readouterr()
+
+    assert original == changed
+    assert original["tickers"][0]["last_bar"] < "2024-09-01"
+    assert original["protocol"]["last_usable_bar_date"] == "2024-08-31"
+
+
+def test_holdout_report_only_scores_holdout_signal_days(tmp_path, capsys) -> None:
+    frame = _synthetic_bars(days=420, start=date(2023, 6, 1))
+    report = _run_cli(tmp_path, frame, "--segment", "holdout")
+    capsys.readouterr()
+
+    bars = prepare_bars(frame)
+    holdout_days = [d for d in bars["date"] if date(2024, 9, 1) <= d <= date(2024, 12, 31)]
+    summary = report["summary"]
+    assert summary["first_signal_date"] == holdout_days[0].isoformat()
+    # The last ten holdout days have no complete forward window inside the period.
+    assert summary["last_signal_date"] == holdout_days[-11].isoformat()
+    assert summary["observations"] == len(holdout_days) - 10
+
+
+def test_fetch_keeps_the_last_bar_of_the_period_and_nothing_after(tmp_path, capsys) -> None:
+    frame = _synthetic_bars(days=420, start=date(2023, 6, 1))
+    calls: list = []
+    report = _run_cli(tmp_path, frame, "--segment", "holdout", calls=calls)
+    capsys.readouterr()
+
+    # One day past --end is requested so an exclusive-end source still returns
+    # the final bar; anything later is cut before it can be used.
+    assert [end for _start, end in calls] == ["2025-01-01"]
+    assert max(pd.to_datetime(frame["date"]).dt.date) > date(2024, 12, 31)
+    assert report["tickers"][0]["last_bar"] == "2024-12-31"
+
+
+def test_signal_is_invariant_to_a_constant_price_factor(bars: pd.DataFrame) -> None:
+    # Back-adjusted prices differ from the prices seen live only by a constant
+    # factor over any window that ends before the corporate action, so a
+    # scale-invariant signal cannot learn anything from a later adjustment.
+    scaled = bars.copy()
+    for column in ("open", "high", "low", "close"):
+        scaled[column] = scaled[column] * 0.37
+    start, end = bars["date"].iloc[60], bars["date"].iloc[-1]
+    original = replay_signals(bars, "TEST", start=start, end=end)
+    rescaled = replay_signals(scaled, "TEST", start=start, end=end)
+    assert [(o.signal_date, o.signal_score, o.buy_signal, o.trend_status) for o in original] == [
+        (o.signal_date, o.signal_score, o.buy_signal, o.trend_status) for o in rescaled
+    ]
+
+
+def test_buy_and_hold_is_the_close_ratio_over_the_simulated_days(bars: pd.DataFrame) -> None:
+    observations = replay_signals(bars, "TEST", start=bars["date"].iloc[60], end=bars["date"].iloc[-1])
+    scored = score_observations(bars, observations, eval_window_days=10, neutral_band_pct=2.0)
+    simulation = simulate_long_or_cash(bars, scored, cost_bps_per_side=10)
+
+    closes = dict(zip(bars["date"], bars["close"]))
+    first_day = scored[0].signal_date
+    last_day = bars["date"].iloc[list(bars["date"]).index(scored[-1].signal_date) + 1]
+    expected = (closes[last_day] / closes[first_day] - 1.0) * 100
+    assert simulation["days"] == len(scored)
+    assert simulation["buy_and_hold_return_pct"] == pytest.approx(expected, abs=0.01)
+    assert 0 < simulation["exposure_pct"] < 100
+
+
+def test_ticker_metrics_expose_only_relative_figures(bars: pd.DataFrame) -> None:
+    observations = replay_signals(bars, "TEST", start=bars["date"].iloc[60], end=bars["date"].iloc[-1])
+    scored = score_observations(bars, observations, eval_window_days=10, neutral_band_pct=2.0)
+    simulation = simulate_long_or_cash(bars, scored, cost_bps_per_side=10)
+    row = ticker_metrics(scored, simulation, eval_window_days=10)
+
+    assert row["non_overlapping_observations"] == len(non_overlapping(scored, 10))
+    assert row["strategy_minus_buy_and_hold_pct"] == pytest.approx(
+        simulation["strategy_return_pct"] - simulation["buy_and_hold_return_pct"], abs=0.01
+    )
+    assert row["net_strategy_minus_buy_and_hold_pct"] <= row["strategy_minus_buy_and_hold_pct"]
+    assert not any("return_pct" in key for key in row)

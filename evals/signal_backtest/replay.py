@@ -381,6 +381,45 @@ def aggregate_simulations(simulations: Sequence[Dict[str, Any]]) -> Dict[str, An
     }
 
 
+def ticker_metrics(
+    observations: Sequence[SignalObservation],
+    simulation: Optional[Dict[str, Any]],
+    *,
+    eval_window_days: int,
+) -> Dict[str, Any]:
+    """Compact per-ticker row for the report.
+
+    Only relative figures are exposed (rank correlation, long-minus-cash spread,
+    strategy return minus buy-and-hold). Raw per-ticker price returns are left
+    out on purpose: next to a known date range they would identify the ticker,
+    and shared reports label tickers anonymously.
+    """
+    thinned = non_overlapping(observations, eval_window_days)
+    spread = _mean_difference(
+        [o.forward_return_pct for o in thinned if o.position == "long"],
+        [o.forward_return_pct for o in thinned if o.position != "long"],
+    )
+    ic = spearman([o.signal_score for o in thinned], [o.forward_return_pct for o in thinned])
+    row: Dict[str, Any] = {
+        "non_overlapping_observations": len(thinned),
+        "rank_ic": _round(ic, 4),
+        "long_minus_cash_pct": spread["difference_pct"],
+        "n_long": spread["n_long"],
+        "n_cash": spread["n_cash"],
+        "exposure_pct": None,
+        "strategy_minus_buy_and_hold_pct": None,
+        "net_strategy_minus_buy_and_hold_pct": None,
+    }
+    if simulation:
+        benchmark = float(simulation["buy_and_hold_return_pct"])
+        row["exposure_pct"] = simulation["exposure_pct"]
+        row["strategy_minus_buy_and_hold_pct"] = _round(float(simulation["strategy_return_pct"]) - benchmark)
+        row["net_strategy_minus_buy_and_hold_pct"] = _round(
+            float(simulation["strategy_net_return_pct"]) - benchmark
+        )
+    return row
+
+
 # ----------------------------------------------------------------------------
 # helpers
 # ----------------------------------------------------------------------------
